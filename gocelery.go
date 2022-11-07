@@ -6,21 +6,24 @@ package gocelery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
 // CeleryClient provides API for sending celery tasks
 type CeleryClient struct {
-	broker  CeleryBroker
-	backend CeleryBackend
-	worker  *CeleryWorker
+	broker   CeleryBroker
+	backend  CeleryBackend
+	worker   *CeleryWorker
+	version2 bool //Specifies if the client must use version 2.
 }
 
 // CeleryBroker is interface for celery broker database
 type CeleryBroker interface {
-	SendCeleryMessage(*CeleryMessage) error
+	SendCeleryMessage(*CeleryMessageV1) error
 	GetTaskMessage() (*TaskMessage, error) // must be non-blocking
+	SendCeleryMessageV2(*TaskMessageV2) error
 }
 
 // CeleryBackend is interface for celery backend database
@@ -35,7 +38,12 @@ func NewCeleryClient(broker CeleryBroker, backend CeleryBackend, numWorkers int)
 		broker,
 		backend,
 		NewCeleryWorker(broker, backend, numWorkers),
+		false,
 	}, nil
+}
+
+func (cc *CeleryClient) SetVersion(v2 bool) {
+	cc.version2 = v2
 }
 
 // Register task
@@ -65,16 +73,39 @@ func (cc *CeleryClient) WaitForStopWorker() {
 
 // Delay gets asynchronous result
 func (cc *CeleryClient) Delay(task string, args ...interface{}) (*AsyncResult, error) {
-	celeryTask := getTaskMessage(task)
-	celeryTask.Args = args
-	return cc.delay(celeryTask)
+	if !cc.version2 {
+		celeryTask := getTaskMessage(task)
+		celeryTask.Args = args
+		return cc.delay(celeryTask)
+	} else {
+		celeryTask := getTaskMessageV2(task)
+		resBytes, err := json.Marshal(args)
+		if err != nil {
+			return nil, err
+		}
+		celeryTask.headers["argsrepr"] = resBytes
+		celeryTask.body.Args = args
+		return cc.delay2(celeryTask)
+	}
+
 }
 
 // DelayKwargs gets asynchronous results with argument map
 func (cc *CeleryClient) DelayKwargs(task string, args map[string]interface{}) (*AsyncResult, error) {
-	celeryTask := getTaskMessage(task)
-	celeryTask.Kwargs = args
-	return cc.delay(celeryTask)
+	if !cc.version2 {
+		celeryTask := getTaskMessage(task)
+		celeryTask.Kwargs = args
+		return cc.delay(celeryTask)
+	} else {
+		celeryTask := getTaskMessageV2(task)
+		resBytes, err := json.Marshal(args)
+		if err != nil {
+			return nil, err
+		}
+		celeryTask.headers["kwargsrepr"] = resBytes
+		celeryTask.body.Kwargs = args
+		return cc.delay2(celeryTask)
+	}
 }
 
 func (cc *CeleryClient) delay(task *TaskMessage) (*AsyncResult, error) {
@@ -91,6 +122,17 @@ func (cc *CeleryClient) delay(task *TaskMessage) (*AsyncResult, error) {
 	}
 	return &AsyncResult{
 		TaskID:  task.ID,
+		backend: cc.backend,
+	}, nil
+}
+
+func (cc *CeleryClient) delay2(task *TaskMessageV2) (*AsyncResult, error) {
+	err := cc.broker.SendCeleryMessageV2(task)
+	if err != nil {
+		return nil, err
+	}
+	return &AsyncResult{
+		TaskID:  task.properties.CorrelationID,
 		backend: cc.backend,
 	}, nil
 }

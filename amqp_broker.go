@@ -5,11 +5,12 @@
 package gocelery
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // AMQPExchange stores AMQP Exchange configuration
@@ -110,7 +111,7 @@ func (b *AMQPCeleryBroker) StartConsumingChannel() error {
 }
 
 // SendCeleryMessage sends CeleryMessage to broker
-func (b *AMQPCeleryBroker) SendCeleryMessage(message *CeleryMessage) error {
+func (b *AMQPCeleryBroker) SendCeleryMessage(message *CeleryMessageV1) error {
 	taskMessage := message.GetTaskMessage()
 	queueName := "celery"
 	_, err := b.QueueDeclare(
@@ -149,7 +150,60 @@ func (b *AMQPCeleryBroker) SendCeleryMessage(message *CeleryMessage) error {
 		Body:         resBytes,
 	}
 
-	return b.Publish(
+	return b.PublishWithContext(
+		context.Background(),
+		"",
+		queueName,
+		false,
+		false,
+		publishMessage,
+	)
+}
+
+// Sends TaskMessageV2 to the broker
+func (b *AMQPCeleryBroker) SendCeleryMessageV2(tm2 *TaskMessageV2) error {
+	queueName := "celery"
+	_, err := b.QueueDeclare(
+		queueName, // name
+		true,      // durable
+		false,     // autoDelete
+		false,     // exclusive
+		false,     // noWait
+		nil,       // args
+	)
+	if err != nil {
+		return err
+	}
+	err = b.ExchangeDeclare(
+		"default",
+		"direct",
+		true,
+		true,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	resBytes, err := json.Marshal(tm2.body)
+	if err != nil {
+		return err
+	}
+
+	publishMessage := amqp.Publishing{
+		DeliveryMode:    amqp.Persistent,
+		Timestamp:       time.Now(),
+		ContentType:     "application/json",
+		Body:            resBytes,
+		ContentEncoding: tm2.properties.ContentEncoding,
+		CorrelationId:   tm2.properties.CorrelationID,
+		ReplyTo:         tm2.properties.ReplyTo,
+		Headers:         amqp.Table(tm2.headers),
+	}
+
+	return b.PublishWithContext(
+		context.Background(),
 		"",
 		queueName,
 		false,

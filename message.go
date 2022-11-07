@@ -1,221 +1,88 @@
-// Copyright (c) 2019 Sick Yoon
-// This file is part of gocelery which is released under MIT license.
-// See file LICENSE for full license details.
-
 package gocelery
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"log"
-	"reflect"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	uuid "github.com/satori/go.uuid"
 )
 
-// CeleryMessage is actual message to be sent to Redis
-type CeleryMessage struct {
-	Body            string                 `json:"body"`
-	Headers         map[string]interface{} `json:"headers,omitempty"`
-	ContentType     string                 `json:"content-type"`
-	Properties      CeleryProperties       `json:"properties"`
-	ContentEncoding string                 `json:"content-encoding"`
+type CeleryMessageProperties struct {
+	CorrelationID   string
+	ContentType     string
+	ContentEncoding string
+	ReplyTo         string
 }
 
-func (cm *CeleryMessage) reset() {
-	cm.Headers = nil
-	cm.Body = ""
-	cm.Properties.CorrelationID = uuid.Must(uuid.NewV4()).String()
-	cm.Properties.ReplyTo = uuid.Must(uuid.NewV4()).String()
-	cm.Properties.DeliveryTag = uuid.Must(uuid.NewV4()).String()
+type CeleryMessageHeaders map[string]interface{}
+
+type CeleryMessageBody struct {
+	Args   []interface{}          `json:"args"`
+	Kwargs map[string]interface{} `json:"kwargs"`
+	Embed  BodyEmbed              `json:"embed"`
 }
 
-var celeryMessagePool = sync.Pool{
-	New: func() interface{} {
-		return &CeleryMessage{
-			Body:        "",
-			Headers:     nil,
-			ContentType: "application/json",
-			Properties: CeleryProperties{
-				BodyEncoding:  "base64",
-				CorrelationID: uuid.Must(uuid.NewV4()).String(),
-				ReplyTo:       uuid.Must(uuid.NewV4()).String(),
-				DeliveryInfo: CeleryDeliveryInfo{
-					Priority:   0,
-					RoutingKey: "celery",
-					Exchange:   "celery",
-				},
-				DeliveryMode: 2,
-				DeliveryTag:  uuid.Must(uuid.NewV4()).String(),
-			},
-			ContentEncoding: "utf-8",
-		}
-	},
+type BodyEmbed struct {
+	Callbacks []string `json:"callbacks"`
+	Errbacks  []string `json:"errbacks"`
+	Chain     []string `json:"chain"`
+	Chord     string   `json:"chord"`
 }
 
-func getCeleryMessage(encodedTaskMessage string) *CeleryMessage {
-	msg := celeryMessagePool.Get().(*CeleryMessage)
-	msg.Body = encodedTaskMessage
-	return msg
+type TaskMessageV2 struct {
+	headers    CeleryMessageHeaders
+	body       CeleryMessageBody
+	properties CeleryMessageProperties
 }
 
-func releaseCeleryMessage(v *CeleryMessage) {
-	v.reset()
-	celeryMessagePool.Put(v)
-}
-
-// CeleryProperties represents properties json
-type CeleryProperties struct {
-	BodyEncoding  string             `json:"body_encoding"`
-	CorrelationID string             `json:"correlation_id"`
-	ReplyTo       string             `json:"reply_to"`
-	DeliveryInfo  CeleryDeliveryInfo `json:"delivery_info"`
-	DeliveryMode  int                `json:"delivery_mode"`
-	DeliveryTag   string             `json:"delivery_tag"`
-}
-
-// CeleryDeliveryInfo represents deliveryinfo json
-type CeleryDeliveryInfo struct {
-	Priority   int    `json:"priority"`
-	RoutingKey string `json:"routing_key"`
-	Exchange   string `json:"exchange"`
-}
-
-// GetTaskMessage retrieve and decode task messages from broker
-func (cm *CeleryMessage) GetTaskMessage() *TaskMessage {
-	// ensure content-type is 'application/json'
-	if cm.ContentType != "application/json" {
-		log.Println("unsupported content type " + cm.ContentType)
-		return nil
+func (tm2 *TaskMessageV2) reset() {
+	tm2.properties.CorrelationID = uuid.Must(uuid.NewV4()).String()
+	tm2.properties.ReplyTo = uuid.Must(uuid.NewV4()).String()
+	tm2.headers = CeleryMessageHeaders{
+		"task":       "",
+		"argsrepr":   "[]",
+		"kwargsrepr": "{}",
 	}
-	// ensure body encoding is base64
-	if cm.Properties.BodyEncoding != "base64" {
-		log.Println("unsupported body encoding " + cm.Properties.BodyEncoding)
-		return nil
-	}
-	// ensure content encoding is utf-8
-	if cm.ContentEncoding != "utf-8" {
-		log.Println("unsupported encoding " + cm.ContentEncoding)
-		return nil
-	}
-	// decode body
-	taskMessage, err := DecodeTaskMessage(cm.Body)
-	if err != nil {
-		log.Println("failed to decode task message")
-		return nil
-	}
-	return taskMessage
+	tm2.body.Args = nil
+	tm2.body.Kwargs = nil
+	tm2.body.Embed = BodyEmbed{}
 }
 
-// TaskMessage is celery-compatible message
-type TaskMessage struct {
-	ID      string                 `json:"id"`
-	Task    string                 `json:"task"`
-	Args    []interface{}          `json:"args"`
-	Kwargs  map[string]interface{} `json:"kwargs"`
-	Retries int                    `json:"retries"`
-	ETA     *string                `json:"eta"`
-	Expires *time.Time             `json:"expires"`
-}
-
-func (tm *TaskMessage) reset() {
-	tm.ID = uuid.Must(uuid.NewV4()).String()
-	tm.Task = ""
-	tm.Args = nil
-	tm.Kwargs = nil
-}
-
-var taskMessagePool = sync.Pool{
+var taskMessageV2Pool = sync.Pool{
 	New: func() interface{} {
 		eta := time.Now().Format(time.RFC3339)
-		return &TaskMessage{
-			ID:      uuid.Must(uuid.NewV4()).String(),
-			Retries: 0,
-			Kwargs:  nil,
-			ETA:     &eta,
+		hostname, _ := os.Hostname()
+		return &TaskMessageV2{
+			headers: CeleryMessageHeaders{
+				"lang":       "go",
+				"origin":     fmt.Sprintf("@%v%v", os.Getpid(), hostname),
+				"eta":        eta,
+				"task":       "",
+				"argsrepr":   "[]",
+				"kwargsrepr": "{}",
+			},
+			body: CeleryMessageBody{},
+			properties: CeleryMessageProperties{
+				CorrelationID:   uuid.Must(uuid.NewV4()).String(),
+				ReplyTo:         uuid.Must(uuid.NewV4()).String(),
+				ContentType:     "application/json",
+				ContentEncoding: "base64",
+			},
 		}
 	},
 }
 
-func getTaskMessage(task string) *TaskMessage {
-	msg := taskMessagePool.Get().(*TaskMessage)
-	msg.Task = task
-	msg.Args = make([]interface{}, 0)
-	msg.Kwargs = make(map[string]interface{})
-	msg.ETA = nil
+func getTaskMessageV2(task string) *TaskMessageV2 {
+	msg := taskMessageV2Pool.Get().(*TaskMessageV2)
+	msg.headers["task"] = task
+	msg.headers["argsrepr"] = "[]"
+	msg.headers["kwargsrepr"] = "{}"
 	return msg
 }
 
-func releaseTaskMessage(v *TaskMessage) {
+func releaseTaskMessageV2(v *TaskMessageV2) {
 	v.reset()
-	taskMessagePool.Put(v)
-}
-
-// DecodeTaskMessage decodes base64 encrypted body and return TaskMessage object
-func DecodeTaskMessage(encodedBody string) (*TaskMessage, error) {
-	body, err := base64.StdEncoding.DecodeString(encodedBody)
-	if err != nil {
-		return nil, err
-	}
-	message := taskMessagePool.Get().(*TaskMessage)
-	err = json.Unmarshal(body, message)
-	if err != nil {
-		return nil, err
-	}
-	return message, nil
-}
-
-// Encode returns base64 json encoded string
-func (tm *TaskMessage) Encode() (string, error) {
-	if tm.Args == nil {
-		tm.Args = make([]interface{}, 0)
-	}
-	jsonData, err := json.Marshal(tm)
-	if err != nil {
-		return "", err
-	}
-	encodedData := base64.StdEncoding.EncodeToString(jsonData)
-	return encodedData, err
-}
-
-// ResultMessage is return message received from broker
-type ResultMessage struct {
-	ID        string        `json:"task_id"`
-	Status    string        `json:"status"`
-	Traceback interface{}   `json:"traceback"`
-	Result    interface{}   `json:"result"`
-	Children  []interface{} `json:"children"`
-}
-
-func (rm *ResultMessage) reset() {
-	rm.Result = nil
-}
-
-var resultMessagePool = sync.Pool{
-	New: func() interface{} {
-		return &ResultMessage{
-			Status:    "SUCCESS",
-			Traceback: nil,
-			Children:  nil,
-		}
-	},
-}
-
-func getResultMessage(val interface{}) *ResultMessage {
-	msg := resultMessagePool.Get().(*ResultMessage)
-	msg.Result = val
-	return msg
-}
-
-func getReflectionResultMessage(val *reflect.Value) *ResultMessage {
-	msg := resultMessagePool.Get().(*ResultMessage)
-	msg.Result = GetRealValue(val)
-	return msg
-}
-
-func releaseResultMessage(v *ResultMessage) {
-	v.reset()
-	resultMessagePool.Put(v)
+	taskMessageV2Pool.Put(v)
 }

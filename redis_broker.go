@@ -6,6 +6,7 @@ package gocelery
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,7 +39,7 @@ func NewRedisCeleryBroker(uri string) *RedisCeleryBroker {
 }
 
 // SendCeleryMessage sends CeleryMessage to redis queue
-func (cb *RedisCeleryBroker) SendCeleryMessage(message *CeleryMessage) error {
+func (cb *RedisCeleryBroker) SendCeleryMessage(message *CeleryMessageV1) error {
 	jsonBytes, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -52,8 +53,12 @@ func (cb *RedisCeleryBroker) SendCeleryMessage(message *CeleryMessage) error {
 	return nil
 }
 
+func (cb *RedisCeleryBroker) SendCeleryMessageV2(message *TaskMessageV2) error {
+	return errors.New("not implemented")
+}
+
 // GetCeleryMessage retrieves celery message from redis queue
-func (cb *RedisCeleryBroker) GetCeleryMessage() (*CeleryMessage, error) {
+func (cb *RedisCeleryBroker) GetCeleryMessage() (*CeleryMessageV1, error) {
 	conn := cb.Get()
 	defer conn.Close()
 	messageJSON, err := conn.Do("BRPOP", cb.QueueName, "1")
@@ -67,7 +72,7 @@ func (cb *RedisCeleryBroker) GetCeleryMessage() (*CeleryMessage, error) {
 	if string(messageList[0].([]byte)) != cb.QueueName {
 		return nil, fmt.Errorf("not a celery message: %v", messageList[0])
 	}
-	var message CeleryMessage
+	var message CeleryMessageV1
 	if err := json.Unmarshal(messageList[1].([]byte), &message); err != nil {
 		return nil, err
 	}

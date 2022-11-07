@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func makeCeleryMessage() (*CeleryMessage, error) {
+func makeCeleryMessage() (*CeleryMessageV1, error) {
 	taskMessage := getTaskMessage("add")
 	taskMessage.Args = []interface{}{rand.Intn(10), rand.Intn(10)}
 	defer releaseTaskMessage(taskMessage)
@@ -64,7 +64,7 @@ func TestBrokerRedisSend(t *testing.T) {
 			releaseCeleryMessage(celeryMessage)
 			continue
 		}
-		var message CeleryMessage
+		var message CeleryMessageV1
 		if err := json.Unmarshal(messageList[1].([]byte), &message); err != nil {
 			t.Errorf("test '%s': failed to unmarshal received message: %v", tc.name, err)
 			releaseCeleryMessage(celeryMessage)
