@@ -1,6 +1,7 @@
 package gocelery
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"reflect"
@@ -21,6 +22,7 @@ func ExampleClientAMQP() {
 	argA := rand.Intn(10)
 	argB := rand.Intn(10)
 
+	fmt.Println("Sending message.")
 	ayncResult, err := cli.DelayKwargs(
 		taskName,
 		map[string]interface{}{
@@ -31,6 +33,8 @@ func ExampleClientAMQP() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("Message sent.")
+	fmt.Println("Waiting for response.")
 
 	res, err := ayncResult.Get(10 * time.Second)
 	if err != nil {
