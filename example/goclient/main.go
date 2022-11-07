@@ -5,7 +5,7 @@
 package main
 
 import (
-	"github.com/gocelery/gocelery"
+	"github.com/piyushdivyankar1994/gocelery"
 )
 
 // Run Celery Worker First!
